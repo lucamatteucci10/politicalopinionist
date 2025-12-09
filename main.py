@@ -5,10 +5,10 @@ from openai import OpenAI
 
 # Load keys from GitHub Secrets
 OPENAI_KEY = os.environ["OPENAI_KEY"]
-X_API_KEY = os.environ["GB5kBPfKFQqSqeHgnGCNhzbNo"]
-X_API_SECRET = os.environ["YrujuLCV76tRoEGBqhHPuKs7cyj4ZpMV9gNntRGfoe7v12PQ8q"]
-X_ACCESS_TOKEN = os.environ["398174170-6JAtfUm64CtxSEQ2zcm2L8Q7PY5T5eGJVMXP8QA0"]
-X_ACCESS_SECRET = os.environ["GzTybUTo1l81lOEmNzPm0GyPWYKwFeAJFYdmlxCOKeZYY"]
+X_API_KEY = os.environ["X_API_KEY"]
+X_API_SECRET = os.environ["X_API_SECRET"]
+X_ACCESS_TOKEN = os.environ["X_ACCESS_TOKEN"]
+X_ACCESS_SECRET = os.environ["X_ACCESS_SECRET"]
 
 # Initialize OpenAI client
 client = OpenAI(api_key=OPENAI_KEY)
