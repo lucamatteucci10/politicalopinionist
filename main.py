@@ -16,7 +16,7 @@ X_API_SECRET = os.environ["X_API_SECRET"]
 X_ACCESS_TOKEN = os.environ["X_ACCESS_TOKEN"]
 X_ACCESS_SECRET = os.environ["X_ACCESS_SECRET"]
 
-# NEW: Test Mode Flag
+# Test mode flag
 TEST_MODE = os.environ.get("TEST_MODE", "false").lower() == "true"
 
 # NewsAPI key
@@ -27,13 +27,12 @@ client = OpenAI(api_key=OPENAI_KEY)
 
 
 def load_personality(path):
-    """Load a columnist's personality JSON file."""
     with open(path, "r") as f:
         return json.load(f)
 
 
 def get_trending_political_topic():
-    """Try Google Trends first; if it fails, fallback to NewsAPI."""
+    """Try Google Trends; if it fails, fallback to NewsAPI with political filtering."""
 
     # --- PRIMARY SOURCE: GOOGLE TRENDS ---
     try:
@@ -44,8 +43,8 @@ def get_trending_political_topic():
         topics = [str(t[0]) for t in trending.values.tolist()]
 
         political_keywords = [
-            "elect", "presid", "biden", "trump", "congress", "congres",
-            "senat", "house", "bill", "border", "policy", "supreme", "court",
+            "elect", "presid", "biden", "trump", "congress", "senat",
+            "house", "bill", "border", "policy", "supreme", "court",
             "immigra", "econom", "inflat", "ukraine", "gaza", "israel",
             "tax", "govern", "republic", "democ", "white house",
             "infrastructure"
@@ -61,41 +60,51 @@ def get_trending_political_topic():
             print("✔ Google Trends topic:", topic)
             return topic
 
-        if topics:
-            print("✔ Google Trends general topic:", topics[0])
-            return topics[0]
-
     except Exception as e:
         print("⚠ Google Trends failed:", e)
 
     # --- FALLBACK SOURCE: NEWSAPI ---
     try:
-        print("Fetching political headline from NewsAPI…")
+        print("Fetching U.S. headlines from NewsAPI…")
 
         url = (
             "https://newsapi.org/v2/top-headlines?"
-            f"category=politics&language=en&country=us&apiKey={NEWSAPI_KEY}"
+            f"language=en&country=us&apiKey={NEWSAPI_KEY}"
         )
 
         response = requests.get(url)
         data = response.json()
 
-        if "articles" in data and len(data["articles"]) > 0:
-            headline = data["articles"][0]["title"]
-            print("✔ NewsAPI topic:", headline)
-            return headline
+        if "articles" in data:
+            political_keywords = [
+                "Biden", "Trump", "election", "Senate", "Congress",
+                "Republican", "Democrat", "policy", "White House",
+                "Governor", "immigration", "border", "Supreme Court",
+                "bill", "tax", "Ukraine", "Gaza", "Israel", "NATO",
+                "China", "diplomatic"
+            ]
+
+            # Scan for political headlines only
+            for article in data["articles"]:
+                title = article["title"]
+                if any(word.lower() in title.lower() for word in political_keywords):
+                    print("✔ NewsAPI political topic:", title)
+                    return title
+
+            # If no political headline found:
+            if len(data["articles"]) > 0:
+                print("⚠ No political headline found — using general NewsAPI first headline.")
+                return data["articles"][0]["title"]
 
     except Exception as e:
-        print("⚠ NewsAPI error:", e)
+        print("⚠ NewsAPI failed:", e)
 
-    # --- FINAL SAFETY FALLBACK ---
+    # --- FINAL FALLBACK ---
     print("⚠ Using final fallback topic.")
     return "current U.S. political developments"
 
 
 def generate_neutral_summary(topic):
-    """Generate a strictly neutral one-sentence summary."""
-
     prompt = f"""
 Write exactly one sentence that provides a strictly neutral, factual summary 
 of this trending political topic: {topic}. 
@@ -114,8 +123,6 @@ Keep it purely descriptive.
 
 
 def generate_article(voice, name, topic, personality):
-    """Generate a spicy political op-ed, enhanced with personality memory."""
-
     personality_text = json.dumps(personality, indent=2)
 
     prompt = f"""
@@ -148,7 +155,6 @@ Keep the article under 900 characters.
 
 
 def post_to_x(text):
-    """Posts the given text to X using Tweepy."""
     client_x = tweepy.Client(
         consumer_key=X_API_KEY,
         consumer_secret=X_API_SECRET,
@@ -161,17 +167,17 @@ def post_to_x(text):
 def main():
     today = date.today().strftime("%B %d, %Y")
 
-    # Load personality seeds
+    # Load personalities
     richard_personality = load_personality("personalities/richard.json")
     elena_personality = load_personality("personalities/elena.json")
 
-    # 1. Get trending topic
+    # 1. Topic
     topic = get_trending_political_topic()
 
-    # 2. Neutral summary
+    # 2. Summary
     summary = generate_neutral_summary(topic)
 
-    # 3. Opinions
+    # 3. Opinion pieces
     conservative_article = generate_article(
         "conservative", "Richard Hawthorne", topic, richard_personality
     )
@@ -179,14 +185,14 @@ def main():
         "progressive", "Elena Marlowe", topic, elena_personality
     )
 
-    # 4. Store articles in Qdrant
+    # 4. Store memories
     qdrant = init_qdrant()
     ensure_collection(qdrant)
 
     store_article(qdrant, "Richard Hawthorne", topic, conservative_article)
     store_article(qdrant, "Elena Marlowe", topic, progressive_article)
 
-    # 5. Final tweet
+    # 5. Tweet content
     tweet = f"""Daily Political Commentary — {today}
 
 🔥 Trending Topic: {topic}
@@ -201,7 +207,7 @@ def main():
 {progressive_article}
 """
 
-    # 6. Post or skip if test mode
+    # 6. Test Mode vs Posting
     if TEST_MODE:
         print("\n===== TEST MODE ACTIVE — SKIPPING POST TO X =====")
         print(tweet)
