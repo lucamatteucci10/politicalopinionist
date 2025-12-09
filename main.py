@@ -1,6 +1,7 @@
 import tweepy
 import os
 import json
+import requests
 from datetime import date
 from openai import OpenAI
 from pytrends.request import TrendReq
@@ -18,6 +19,9 @@ X_ACCESS_SECRET = os.environ["X_ACCESS_SECRET"]
 # NEW: Test Mode Flag
 TEST_MODE = os.environ.get("TEST_MODE", "false").lower() == "true"
 
+# NewsAPI key
+NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY")
+
 # Initialize OpenAI client
 client = OpenAI(api_key=OPENAI_KEY)
 
@@ -29,34 +33,68 @@ def load_personality(path):
 
 
 def get_trending_political_topic():
-    """Fetch trending topics from Google Trends and filter for political relevance."""
+    """Try Google Trends first; if it fails, fallback to NewsAPI."""
 
-    pytrends = TrendReq(hl='en-US', tz=360)
-    trending = pytrends.trending_searches(pn='united_states')
+    # --- PRIMARY SOURCE: GOOGLE TRENDS ---
+    try:
+        print("Fetching topic from Google Trends…")
 
-    topics = [str(t[0]) for t in trending.values.tolist()]
+        pytrends = TrendReq(hl='en-US', tz=360)
+        trending = pytrends.trending_searches(pn='united_states')
+        topics = [str(t[0]) for t in trending.values.tolist()]
 
-    political_keywords = [
-        "elect", "presid", "biden", "trump", "congress", "congres",
-        "senat", "house", "bill", "border", "policy", "supreme", "court",
-        "immigra", "econom", "inflat", "ukraine", "gaza", "israel",
-        "tax", "govern", "republic", "democ", "white house",
-        "infrastructure"
-    ]
+        political_keywords = [
+            "elect", "presid", "biden", "trump", "congress", "congres",
+            "senat", "house", "bill", "border", "policy", "supreme", "court",
+            "immigra", "econom", "inflat", "ukraine", "gaza", "israel",
+            "tax", "govern", "republic", "democ", "white house",
+            "infrastructure"
+        ]
 
-    political_topics = [
-        topic for topic in topics
-        if any(keyword.lower() in topic.lower() for keyword in political_keywords)
-    ]
+        political_topics = [
+            topic for topic in topics
+            if any(keyword.lower() in topic.lower() for keyword in political_keywords)
+        ]
 
-    if political_topics:
-        return political_topics[0]
+        if political_topics:
+            topic = political_topics[0]
+            print("✔ Google Trends topic:", topic)
+            return topic
 
-    return "a major political issue trending today"
+        if topics:
+            print("✔ Google Trends general topic:", topics[0])
+            return topics[0]
+
+    except Exception as e:
+        print("⚠ Google Trends failed:", e)
+
+    # --- FALLBACK SOURCE: NEWSAPI ---
+    try:
+        print("Fetching political headline from NewsAPI…")
+
+        url = (
+            "https://newsapi.org/v2/top-headlines?"
+            f"category=politics&language=en&country=us&apiKey={NEWSAPI_KEY}"
+        )
+
+        response = requests.get(url)
+        data = response.json()
+
+        if "articles" in data and len(data["articles"]) > 0:
+            headline = data["articles"][0]["title"]
+            print("✔ NewsAPI topic:", headline)
+            return headline
+
+    except Exception as e:
+        print("⚠ NewsAPI error:", e)
+
+    # --- FINAL SAFETY FALLBACK ---
+    print("⚠ Using final fallback topic.")
+    return "current U.S. political developments"
 
 
 def generate_neutral_summary(topic):
-    """Generate a short, strictly neutral one-sentence summary of the topic."""
+    """Generate a strictly neutral one-sentence summary."""
 
     prompt = f"""
 Write exactly one sentence that provides a strictly neutral, factual summary 
@@ -110,7 +148,7 @@ Keep the article under 900 characters.
 
 
 def post_to_x(text):
-    """Posts the given text to X (Twitter) using Tweepy."""
+    """Posts the given text to X using Tweepy."""
     client_x = tweepy.Client(
         consumer_key=X_API_KEY,
         consumer_secret=X_API_SECRET,
@@ -123,7 +161,7 @@ def post_to_x(text):
 def main():
     today = date.today().strftime("%B %d, %Y")
 
-    # Load personality seeds (still used but will evolve)
+    # Load personality seeds
     richard_personality = load_personality("personalities/richard.json")
     elena_personality = load_personality("personalities/elena.json")
 
@@ -133,7 +171,7 @@ def main():
     # 2. Neutral summary
     summary = generate_neutral_summary(topic)
 
-    # 3. Opinion pieces  
+    # 3. Opinions
     conservative_article = generate_article(
         "conservative", "Richard Hawthorne", topic, richard_personality
     )
@@ -148,7 +186,7 @@ def main():
     store_article(qdrant, "Richard Hawthorne", topic, conservative_article)
     store_article(qdrant, "Elena Marlowe", topic, progressive_article)
 
-    # 5. Final tweet text
+    # 5. Final tweet
     tweet = f"""Daily Political Commentary — {today}
 
 🔥 Trending Topic: {topic}
@@ -163,7 +201,7 @@ def main():
 {progressive_article}
 """
 
-    # 6. Post to X (or skip in test mode)
+    # 6. Post or skip if test mode
     if TEST_MODE:
         print("\n===== TEST MODE ACTIVE — SKIPPING POST TO X =====")
         print(tweet)
