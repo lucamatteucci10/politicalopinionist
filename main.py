@@ -34,7 +34,7 @@ Keep it under 900 characters and avoid targeted persuasion.
         temperature=0.7
     )
 
-    return response.choices[0].message["content"].strip()
+    return response.choices[0].message.content.strip()
 
 
 def post_to_x(text):
