@@ -30,4 +30,5 @@ jobs:
           X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
           QDRANT_URL: ${{ secrets.QDRANT_URL }}
           QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+          TEST_MODE: ${{ secrets.TEST_MODE }}  # <— NEW
         run: python main.py
