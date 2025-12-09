@@ -19,7 +19,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install openai tweepy pytrends qdrant-client
+        run: pip install openai tweepy pytrends qdrant-client requests
 
       - name: Run bot
         env:
@@ -30,5 +30,6 @@ jobs:
           X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
           QDRANT_URL: ${{ secrets.QDRANT_URL }}
           QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
-          TEST_MODE: ${{ secrets.TEST_MODE }}  # <— NEW
+          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}   # ← NEW (required for fallback)
+          TEST_MODE: ${{ secrets.TEST_MODE }}       # ← Test Mode switch
         run: python main.py
