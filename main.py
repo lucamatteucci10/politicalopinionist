@@ -5,6 +5,9 @@ from datetime import date
 from openai import OpenAI
 from pytrends.request import TrendReq
 
+# NEW: import memory functions
+from memory import init_qdrant, ensure_collection, store_article
+
 # Load keys from GitHub Secrets
 OPENAI_KEY = os.environ["OPENAI_KEY"]
 X_API_KEY = os.environ["X_API_KEY"]
@@ -119,7 +122,7 @@ def post_to_x(text):
 def main():
     today = date.today().strftime("%B %d, %Y")
 
-    # Load personalities
+    # Load personality seeds (still used but will evolve)
     richard_personality = load_personality("personalities/richard.json")
     elena_personality = load_personality("personalities/elena.json")
 
@@ -129,7 +132,7 @@ def main():
     # 2. Neutral summary
     summary = generate_neutral_summary(topic)
 
-    # 3. Opinion pieces with personality context
+    # 3. Opinion pieces  
     conservative_article = generate_article(
         "conservative", "Richard Hawthorne", topic, richard_personality
     )
@@ -138,7 +141,14 @@ def main():
         "progressive", "Elena Marlowe", topic, elena_personality
     )
 
-    # 4. Final tweet text (updated with symbols)
+    # NEW: 4. Store articles in Qdrant (does NOT affect behavior yet)
+    qdrant = init_qdrant()
+    ensure_collection(qdrant)
+
+    store_article(qdrant, "Richard Hawthorne", topic, conservative_article)
+    store_article(qdrant, "Elena Marlowe", topic, progressive_article)
+
+    # 5. Final tweet text
     tweet = f"""Daily Political Commentary — {today}
 
 🔥 Trending Topic: {topic}
@@ -153,7 +163,7 @@ def main():
 {progressive_article}
 """
 
-    # 5. Post to X
+    # 6. Post to X
     post_to_x(tweet)
 
 
