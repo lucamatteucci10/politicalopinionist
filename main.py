@@ -15,6 +15,9 @@ X_API_SECRET = os.environ["X_API_SECRET"]
 X_ACCESS_TOKEN = os.environ["X_ACCESS_TOKEN"]
 X_ACCESS_SECRET = os.environ["X_ACCESS_SECRET"]
 
+# NEW: Test Mode Flag
+TEST_MODE = os.environ.get("TEST_MODE", "false").lower() == "true"
+
 # Initialize OpenAI client
 client = OpenAI(api_key=OPENAI_KEY)
 
@@ -108,14 +111,12 @@ Keep the article under 900 characters.
 
 def post_to_x(text):
     """Posts the given text to X (Twitter) using Tweepy."""
-
     client_x = tweepy.Client(
         consumer_key=X_API_KEY,
         consumer_secret=X_API_SECRET,
         access_token=X_ACCESS_TOKEN,
         access_token_secret=X_ACCESS_SECRET
     )
-
     client_x.create_tweet(text=text)
 
 
@@ -136,12 +137,11 @@ def main():
     conservative_article = generate_article(
         "conservative", "Richard Hawthorne", topic, richard_personality
     )
-
     progressive_article = generate_article(
         "progressive", "Elena Marlowe", topic, elena_personality
     )
 
-    # NEW: 4. Store articles in Qdrant (does NOT affect behavior yet)
+    # 4. Store articles in Qdrant
     qdrant = init_qdrant()
     ensure_collection(qdrant)
 
@@ -163,8 +163,13 @@ def main():
 {progressive_article}
 """
 
-    # 6. Post to X
-    post_to_x(tweet)
+    # 6. Post to X (or skip in test mode)
+    if TEST_MODE:
+        print("\n===== TEST MODE ACTIVE — SKIPPING POST TO X =====")
+        print(tweet)
+        print("=================================================\n")
+    else:
+        post_to_x(tweet)
 
 
 if __name__ == "__main__":
