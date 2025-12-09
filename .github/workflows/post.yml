@@ -19,7 +19,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install openai tweepy
+        run: pip install openai tweepy pytrends
 
       - name: Run bot
         env:
