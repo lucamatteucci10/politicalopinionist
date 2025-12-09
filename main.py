@@ -1,5 +1,6 @@
 import tweepy
 import os
+import json
 from datetime import date
 from openai import OpenAI
 from pytrends.request import TrendReq
@@ -13,6 +14,12 @@ X_ACCESS_SECRET = os.environ["X_ACCESS_SECRET"]
 
 # Initialize OpenAI client
 client = OpenAI(api_key=OPENAI_KEY)
+
+
+def load_personality(path):
+    """Load a columnist's personality JSON file."""
+    with open(path, "r") as f:
+        return json.load(f)
 
 
 def get_trending_political_topic():
@@ -62,17 +69,21 @@ Keep it purely descriptive.
     return response.choices[0].message.content.strip()
 
 
-def generate_article(voice, name, topic):
-    """Generate a spicy political op-ed from a left or right perspective."""
+def generate_article(voice, name, topic, personality):
+    """Generate a spicy political op-ed, enhanced with personality memory."""
+
+    personality_text = json.dumps(personality, indent=2)
 
     prompt = f"""
-You are {name}, a sharp and opinionated political columnist writing in a punchy newspaper style.
+You are {name}, an established political opinion columnist. Here is your personality profile:
+{personality_text}
+
 Write a 2–4 paragraph op-ed article about this trending political topic: {topic}.
 Perspective: {voice}.
 
-Your tone should be more assertive, bold, and provocative — offering strong opinions,
+Your tone should be assertive, bold, and provocative — offering strong opinions,
 confident claims, pointed observations, and occasional rhetorical flair. You may explicitly 
-name public political figures (e.g., President Biden, former President Trump, Senators, Governors) 
+name public political figures (e.g., the sitting President, former Presidents, major political leaders, Senators, Governors) 
 and occasionally praise or criticize them when relevant, but keep your commentary analytical,
 not targeted at specific demographic groups.
 
@@ -108,22 +119,26 @@ def post_to_x(text):
 def main():
     today = date.today().strftime("%B %d, %Y")
 
+    # Load personalities
+    richard_personality = load_personality("personalities/richard.json")
+    elena_personality = load_personality("personalities/elena.json")
+
     # 1. Get trending topic
     topic = get_trending_political_topic()
 
     # 2. Neutral summary
     summary = generate_neutral_summary(topic)
 
-    # 3. Opinion pieces
+    # 3. Opinion pieces with personality context
     conservative_article = generate_article(
-        "conservative", "Richard Hawthorne", topic
+        "conservative", "Richard Hawthorne", topic, richard_personality
     )
 
     progressive_article = generate_article(
-        "progressive", "Elena Marlowe", topic
+        "progressive", "Elena Marlowe", topic, elena_personality
     )
 
-    # 4. Final tweet text
+    # 4. Final tweet text (updated with symbols)
     tweet = f"""Daily Political Commentary — {today}
 
 🔥 Trending Topic: {topic}
@@ -131,10 +146,10 @@ def main():
 📰 Summary:
 {summary}
 
-🟦 Conservative — Richard Hawthorne:
+🦅 Conservative — Richard Hawthorne:
 {conservative_article}
 
-🟥 Progressive — Elena Marlowe:
+⚖️ Progressive — Elena Marlowe:
 {progressive_article}
 """
 
