@@ -1,0 +1,31 @@
+name: Daily Political Bot
+
+on:
+  schedule:
+    - cron: "0 14 * * *"   # Every day at 2 PM UTC (9 AM Boston)
+  workflow_dispatch:       # Manual trigger if needed
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install openai tweepy
+
+      - name: Run bot
+        env:
+          OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+        run: python main.py
