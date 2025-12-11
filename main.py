@@ -93,7 +93,6 @@ def get_wikipedia_context(topic, max_pages=3):
         }
 
         headers = {
-            # Put any contact you like here, Wikipedia just wants *some* UA
             "User-Agent": "politicalopinionist-bot/1.0 (contact: example@example.com)"
         }
 
@@ -174,7 +173,7 @@ Keep it purely descriptive and high-level.
 
 
 def generate_article(voice, name, topic, personality, wiki_context=""):
-    """Generate an opinionated op-ed grounded in Wikipedia facts."""
+    """Generate an opinionated op-ed grounded in Wikipedia facts (but Qdrant is NOT used yet)."""
 
     personality_text = json.dumps(personality, indent=2)
 
@@ -245,7 +244,7 @@ def main():
     # 3. Neutral summary
     summary = generate_neutral_summary(topic, wiki_context)
 
-    # 4. Opinion pieces
+    # 4. Opinion pieces (still do NOT use Qdrant; only Wikipedia context)
     conservative_article = generate_article(
         "conservative", "Richard Hawthorne", topic, richard_personality, wiki_context
     )
@@ -253,10 +252,18 @@ def main():
         "progressive", "Elena Marlowe", topic, elena_personality, wiki_context
     )
 
-    # 5. Store articles in Qdrant
+    # 5. Store everything in Qdrant (context + summary + both articles)
     qdrant = init_qdrant()
     ensure_collection(qdrant)
 
+    # a) Wikipedia factual context as its own memory record
+    if wiki_context:
+        store_article(qdrant, "CONTEXT_WIKIPEDIA", topic, wiki_context)
+
+    # b) Neutral summary as its own memory record
+    store_article(qdrant, "SUMMARY_NEUTRAL", topic, summary)
+
+    # c) Conservative & progressive op-eds (as before)
     store_article(qdrant, "Richard Hawthorne", topic, conservative_article)
     store_article(qdrant, "Elena Marlowe", topic, progressive_article)
 
