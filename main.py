@@ -2,9 +2,10 @@ import tweepy
 import os
 import json
 import requests
+import urllib.parse
 from datetime import date
 from openai import OpenAI
-from pytrends.request import TrendReq
+from pytrends.request import TrendReq  # still imported if you want to re-use later
 
 # NEW: import memory functions
 from memory import init_qdrant, ensure_collection, store_article
@@ -32,41 +33,15 @@ def load_personality(path):
 
 
 def get_trending_political_topic():
-    """Try Google Trends; if it fails, fallback to NewsAPI with political filtering."""
+    """Get a political topic from NewsAPI with keyword filtering."""
 
-    # --- PRIMARY SOURCE: GOOGLE TRENDS ---
+    print("Fetching U.S. headlines from NewsAPI…")
+
+    if not NEWSAPI_KEY:
+        print("⚠ NEWSAPI_KEY not set, falling back to generic topic.")
+        return "current U.S. political developments"
+
     try:
-        print("Fetching topic from Google Trends…")
-
-        pytrends = TrendReq(hl='en-US', tz=360)
-        trending = pytrends.trending_searches(pn='united_states')
-        topics = [str(t[0]) for t in trending.values.tolist()]
-
-        political_keywords = [
-            "elect", "presid", "biden", "trump", "congress", "senat",
-            "house", "bill", "border", "policy", "supreme", "court",
-            "immigra", "econom", "inflat", "ukraine", "gaza", "israel",
-            "tax", "govern", "republic", "democ", "white house",
-            "infrastructure"
-        ]
-
-        political_topics = [
-            topic for topic in topics
-            if any(keyword.lower() in topic.lower() for keyword in political_keywords)
-        ]
-
-        if political_topics:
-            topic = political_topics[0]
-            print("✔ Google Trends topic:", topic)
-            return topic
-
-    except Exception as e:
-        print("⚠ Google Trends failed:", e)
-
-    # --- FALLBACK SOURCE: NEWSAPI ---
-    try:
-        print("Fetching U.S. headlines from NewsAPI…")
-
         url = (
             "https://newsapi.org/v2/top-headlines?"
             f"language=en&country=us&apiKey={NEWSAPI_KEY}"
@@ -84,33 +59,109 @@ def get_trending_political_topic():
                 "China", "diplomatic"
             ]
 
-            # Scan for political headlines only
+            # Prefer headlines that clearly look political
             for article in data["articles"]:
-                title = article["title"]
+                title = article.get("title") or ""
                 if any(word.lower() in title.lower() for word in political_keywords):
                     print("✔ NewsAPI political topic:", title)
                     return title
 
-            # If no political headline found:
+            # If nothing matched but we got headlines, take the first one
             if len(data["articles"]) > 0:
-                print("⚠ No political headline found — using general NewsAPI first headline.")
-                return data["articles"][0]["title"]
+                fallback_title = data["articles"][0].get("title") or "current U.S. political developments"
+                print("⚠ No explicit political headline found — using general headline:", fallback_title)
+                return fallback_title
 
     except Exception as e:
         print("⚠ NewsAPI failed:", e)
 
-    # --- FINAL FALLBACK ---
     print("⚠ Using final fallback topic.")
     return "current U.S. political developments"
 
 
-def generate_neutral_summary(topic):
-    prompt = f"""
-Write exactly one sentence that provides a strictly neutral, factual summary 
-of this trending political topic: {topic}. 
-Do NOT express any opinion, emotion, speculation, or evaluation. 
-Do NOT take a side. 
-Keep it purely descriptive.
+def get_wikipedia_context(topic, max_pages=3):
+    """Fetch neutral factual background from Wikipedia related to the topic."""
+
+    try:
+        search_url = "https://en.wikipedia.org/w/api.php"
+        search_params = {
+            "action": "query",
+            "list": "search",
+            "srsearch": topic,
+            "format": "json",
+            "srlimit": max_pages,
+        }
+
+        headers = {
+            # Put any contact you like here, Wikipedia just wants *some* UA
+            "User-Agent": "politicalopinionist-bot/1.0 (contact: example@example.com)"
+        }
+
+        resp = requests.get(search_url, params=search_params, headers=headers, timeout=10)
+        data = resp.json()
+
+        if "query" not in data or "search" not in data["query"]:
+            print("⚠ Wikipedia search returned no results.")
+            return ""
+
+        bullets = []
+        for item in data["query"]["search"]:
+            title = item.get("title")
+            if not title:
+                continue
+
+            # Get summary for this page
+            title_encoded = urllib.parse.quote(title.replace(" ", "_"))
+            summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{title_encoded}"
+            s_resp = requests.get(summary_url, headers=headers, timeout=10)
+
+            if s_resp.status_code != 200:
+                continue
+
+            s_data = s_resp.json()
+            extract = s_data.get("extract")
+            if not extract:
+                continue
+
+            short_extract = extract.strip()
+            if len(short_extract) > 400:
+                short_extract = short_extract[:397] + "..."
+
+            bullets.append(f"- {title}: {short_extract}")
+
+        context = "\n".join(bullets[:max_pages])
+        if context:
+            print("✔ Wikipedia context fetched.")
+        else:
+            print("⚠ No usable Wikipedia context extracted.")
+        return context
+
+    except Exception as e:
+        print("⚠ Wikipedia context fetch failed:", e)
+        return ""
+
+
+def generate_neutral_summary(topic, wiki_context=""):
+    """Generate a strictly neutral one-sentence summary, grounded if possible."""
+
+    base = f"This trending political topic is: {topic}."
+
+    if wiki_context:
+        context_part = f"""
+Here are neutral background notes from Wikipedia about this topic:
+{wiki_context}
+"""
+    else:
+        context_part = ""
+
+    prompt = f"""You are a neutral political explainer.
+
+{base}{context_part}
+
+Write exactly one sentence that provides a strictly neutral, factual summary of the topic.
+Do NOT express any opinion, emotion, speculation, or evaluation.
+Do NOT take a side.
+Keep it purely descriptive and high-level.
 """
 
     response = client.chat.completions.create(
@@ -122,14 +173,28 @@ Keep it purely descriptive.
     return response.choices[0].message.content.strip()
 
 
-def generate_article(voice, name, topic, personality):
+def generate_article(voice, name, topic, personality, wiki_context=""):
+    """Generate an opinionated op-ed grounded in Wikipedia facts."""
+
     personality_text = json.dumps(personality, indent=2)
 
-    prompt = f"""
-You are {name}, an established political opinion columnist. Here is your personality profile:
+    if wiki_context:
+        context_block = f"""Here are factual background notes from recent Wikipedia pages related to this topic and the entities involved:
+{wiki_context}
+
+Treat these as up-to-date facts. If anything you 'remember' conflicts with these notes, trust these notes and avoid outdated claims.
+"""
+    else:
+        context_block = (
+            "If you are unsure about a specific fact (like someone's current role or title), "
+            "stay vague rather than guessing.\n"
+        )
+
+    prompt = f"""You are {name}, an established political opinion columnist. Here is your personality profile:
 {personality_text}
 
-Write a 2–4 paragraph op-ed article about this trending political topic: {topic}.
+{context_block}
+Now, write a 2–4 paragraph op-ed article about this trending political topic: {topic}.
 Perspective: {voice}.
 
 Your tone should be assertive, bold, and provocative — offering strong opinions,
@@ -171,28 +236,31 @@ def main():
     richard_personality = load_personality("personalities/richard.json")
     elena_personality = load_personality("personalities/elena.json")
 
-    # 1. Topic
+    # 1. Topic from NewsAPI
     topic = get_trending_political_topic()
 
-    # 2. Summary
-    summary = generate_neutral_summary(topic)
+    # 2. Factual background from Wikipedia
+    wiki_context = get_wikipedia_context(topic)
 
-    # 3. Opinion pieces
+    # 3. Neutral summary
+    summary = generate_neutral_summary(topic, wiki_context)
+
+    # 4. Opinion pieces
     conservative_article = generate_article(
-        "conservative", "Richard Hawthorne", topic, richard_personality
+        "conservative", "Richard Hawthorne", topic, richard_personality, wiki_context
     )
     progressive_article = generate_article(
-        "progressive", "Elena Marlowe", topic, elena_personality
+        "progressive", "Elena Marlowe", topic, elena_personality, wiki_context
     )
 
-    # 4. Store memories
+    # 5. Store articles in Qdrant
     qdrant = init_qdrant()
     ensure_collection(qdrant)
 
     store_article(qdrant, "Richard Hawthorne", topic, conservative_article)
     store_article(qdrant, "Elena Marlowe", topic, progressive_article)
 
-    # 5. Tweet content
+    # 6. Compose tweet
     tweet = f"""Daily Political Commentary — {today}
 
 🔥 Trending Topic: {topic}
@@ -207,7 +275,7 @@ def main():
 {progressive_article}
 """
 
-    # 6. Test Mode vs Posting
+    # 7. Test mode vs live post
     if TEST_MODE:
         print("\n===== TEST MODE ACTIVE — SKIPPING POST TO X =====")
         print(tweet)
