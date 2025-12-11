@@ -5,25 +5,23 @@ import requests
 import urllib.parse
 from datetime import date
 from openai import OpenAI
-from pytrends.request import TrendReq  # still imported if you want to re-use later
+from pytrends.request import TrendReq
 
-# NEW: import memory functions
+# Memory functions
 from memory import init_qdrant, ensure_collection, store_article
 
-# Load keys from GitHub Secrets
+# Load keys
 OPENAI_KEY = os.environ["OPENAI_KEY"]
 X_API_KEY = os.environ["X_API_KEY"]
 X_API_SECRET = os.environ["X_API_SECRET"]
 X_ACCESS_TOKEN = os.environ["X_ACCESS_TOKEN"]
 X_ACCESS_SECRET = os.environ["X_ACCESS_SECRET"]
+NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY")
 
 # Test mode flag
 TEST_MODE = os.environ.get("TEST_MODE", "false").lower() == "true"
 
-# NewsAPI key
-NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY")
-
-# Initialize OpenAI client
+# OpenAI client
 client = OpenAI(api_key=OPENAI_KEY)
 
 
@@ -32,13 +30,14 @@ def load_personality(path):
         return json.load(f)
 
 
+# ============================================================
+# 1. FETCH NEWS TOPIC (NewsAPI)
+# ============================================================
 def get_trending_political_topic():
-    """Get a political topic from NewsAPI with keyword filtering."""
-
     print("Fetching U.S. headlines from NewsAPI…")
 
     if not NEWSAPI_KEY:
-        print("⚠ NEWSAPI_KEY not set, falling back to generic topic.")
+        print("⚠ NEWSAPI_KEY missing — using fallback topic.")
         return "current U.S. political developments"
 
     try:
@@ -46,7 +45,6 @@ def get_trending_political_topic():
             "https://newsapi.org/v2/top-headlines?"
             f"language=en&country=us&apiKey={NEWSAPI_KEY}"
         )
-
         response = requests.get(url)
         data = response.json()
 
@@ -59,48 +57,46 @@ def get_trending_political_topic():
                 "China", "diplomatic"
             ]
 
-            # Prefer headlines that clearly look political
             for article in data["articles"]:
                 title = article.get("title") or ""
                 if any(word.lower() in title.lower() for word in political_keywords):
-                    print("✔ NewsAPI political topic:", title)
+                    print("✔ Political topic from NewsAPI:", title)
                     return title
 
-            # If nothing matched but we got headlines, take the first one
-            if len(data["articles"]) > 0:
-                fallback_title = data["articles"][0].get("title") or "current U.S. political developments"
-                print("⚠ No explicit political headline found — using general headline:", fallback_title)
-                return fallback_title
+            # fallback to first headline
+            if data["articles"]:
+                fallback = data["articles"][0].get("title", "current U.S. politics")
+                print("⚠ No political match — using first headline:", fallback)
+                return fallback
 
     except Exception as e:
-        print("⚠ NewsAPI failed:", e)
+        print("⚠ NewsAPI error:", e)
 
-    print("⚠ Using final fallback topic.")
     return "current U.S. political developments"
 
 
+# ============================================================
+# 2. FETCH WIKIPEDIA CONTEXT
+# ============================================================
 def get_wikipedia_context(topic, max_pages=3):
-    """Fetch neutral factual background from Wikipedia related to the topic."""
-
     try:
         search_url = "https://en.wikipedia.org/w/api.php"
-        search_params = {
+        params = {
             "action": "query",
             "list": "search",
             "srsearch": topic,
             "format": "json",
             "srlimit": max_pages,
         }
-
         headers = {
             "User-Agent": "politicalopinionist-bot/1.0 (contact: example@example.com)"
         }
 
-        resp = requests.get(search_url, params=search_params, headers=headers, timeout=10)
+        resp = requests.get(search_url, params=params, headers=headers, timeout=10)
         data = resp.json()
 
         if "query" not in data or "search" not in data["query"]:
-            print("⚠ Wikipedia search returned no results.")
+            print("⚠ No Wikipedia search results.")
             return ""
 
         bullets = []
@@ -109,163 +105,156 @@ def get_wikipedia_context(topic, max_pages=3):
             if not title:
                 continue
 
-            # Get summary for this page
-            title_encoded = urllib.parse.quote(title.replace(" ", "_"))
-            summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{title_encoded}"
+            encoded = urllib.parse.quote(title.replace(" ", "_"))
+            summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}"
             s_resp = requests.get(summary_url, headers=headers, timeout=10)
 
             if s_resp.status_code != 200:
                 continue
 
-            s_data = s_resp.json()
-            extract = s_data.get("extract")
+            extract = s_resp.json().get("extract")
             if not extract:
                 continue
 
-            short_extract = extract.strip()
-            if len(short_extract) > 400:
-                short_extract = short_extract[:397] + "..."
+            extract = extract.strip()
+            if len(extract) > 400:
+                extract = extract[:397] + "..."
 
-            bullets.append(f"- {title}: {short_extract}")
+            bullets.append(f"- {title}: {extract}")
 
         context = "\n".join(bullets[:max_pages])
         if context:
             print("✔ Wikipedia context fetched.")
-        else:
-            print("⚠ No usable Wikipedia context extracted.")
         return context
 
     except Exception as e:
-        print("⚠ Wikipedia context fetch failed:", e)
+        print("⚠ Wikipedia error:", e)
         return ""
 
 
-def generate_neutral_summary(topic, wiki_context=""):
-    """Generate a strictly neutral one-sentence summary, grounded if possible."""
-
+# ============================================================
+# 3. NEUTRAL SUMMARY
+# ============================================================
+def generate_neutral_summary(topic, wiki_context):
     base = f"This trending political topic is: {topic}."
 
-    if wiki_context:
-        context_part = f"""
-Here are neutral background notes from Wikipedia about this topic:
-{wiki_context}
-"""
-    else:
-        context_part = ""
+    wiki_block = (
+        f"\nHere are neutral background notes from Wikipedia:\n{wiki_context}\n"
+        if wiki_context else ""
+    )
 
-    prompt = f"""You are a neutral political explainer.
+    prompt = f"""
+You are a strictly neutral political summarizer.
 
-{base}{context_part}
+{base}{wiki_block}
 
-Write exactly one sentence that provides a strictly neutral, factual summary of the topic.
-Do NOT express any opinion, emotion, speculation, or evaluation.
-Do NOT take a side.
-Keep it purely descriptive and high-level.
+Write exactly one sentence that is purely factual.
+No opinions, no bias, no speculation.
 """
 
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.2
+        temperature=0.2,
     )
 
     return response.choices[0].message.content.strip()
 
 
-def generate_article(voice, name, topic, personality, wiki_context=""):
-    """Generate an opinionated op-ed grounded in Wikipedia facts (but Qdrant is NOT used yet)."""
-
+# ============================================================
+# 4. OP-ED GENERATOR WITH TRUMP-AS-PRESIDENT OVERRIDE
+# ============================================================
+def generate_article(voice, name, topic, personality, wiki_context):
     personality_text = json.dumps(personality, indent=2)
 
-    if wiki_context:
-        context_block = f"""Here are factual background notes from recent Wikipedia pages related to this topic and the entities involved:
-{wiki_context}
+    CURRENT_FACTS = """
+You must follow these UPDATED REAL-WORLD FACTS, which override all outdated knowledge:
 
-Treat these as up-to-date facts. If anything you 'remember' conflicts with these notes, trust these notes and avoid outdated claims.
+- The current U.S. President is **Donald J. Trump** (2nd nonconsecutive term: 2025–2029).
+- Joe Biden is the **former** U.S. President (2021–2025).
+- When referring to "the President", "the administration", or "current policy", you MUST refer to President Trump.
+- Do NOT describe Biden as the current president.
+- Do NOT describe Trump as the former president.
+- If Wikipedia factual context contradicts your memory, trust Wikipedia instead.
 """
-    else:
-        context_block = (
-            "If you are unsure about a specific fact (like someone's current role or title), "
-            "stay vague rather than guessing.\n"
-        )
 
-    prompt = f"""You are {name}, an established political opinion columnist. Here is your personality profile:
+    wiki_block = (
+        f"Here are factual notes from Wikipedia (these override memory):\n{wiki_context}\n"
+        if wiki_context else
+        "If unsure of a fact, avoid guessing and speak broadly.\n"
+    )
+
+    prompt = f"""
+You are {name}, a political opinion columnist. Here is your personality:
 {personality_text}
 
-{context_block}
-Now, write a 2–4 paragraph op-ed article about this trending political topic: {topic}.
-Perspective: {voice}.
+MANDATORY FACTUAL REALITY:
+{CURRENT_FACTS}
 
-Your tone should be assertive, bold, and provocative — offering strong opinions,
-confident claims, pointed observations, and occasional rhetorical flair. You may explicitly 
-name public political figures (e.g., the sitting President, former Presidents, major political leaders, Senators, Governors) 
-and occasionally praise or criticize them when relevant, but keep your commentary analytical,
-not targeted at specific demographic groups.
+{wiki_block}
 
-You are NOT neutral — you are an opinion writer with a clear ideological viewpoint — 
-but you still maintain professionalism and avoid personal attacks or incitement. 
-Keep commentary grounded in policy, leadership decisions, and public events.
+Now write a 2–4 paragraph op-ed on: {topic}
+Perspective: {voice}
 
-Keep the article under 900 characters.
+Rules:
+- Keep under 900 characters
+- Bold, assertive tone
+- May praise or criticize public figures
+- No personal attacks or incitement
+- Keep policy-focused and analytical
 """
 
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.8
+        temperature=0.8,
     )
-
     return response.choices[0].message.content.strip()
 
 
+# ============================================================
+# 5. TWEET SENDER
+# ============================================================
 def post_to_x(text):
     client_x = tweepy.Client(
         consumer_key=X_API_KEY,
         consumer_secret=X_API_SECRET,
         access_token=X_ACCESS_TOKEN,
-        access_token_secret=X_ACCESS_SECRET
+        access_token_secret=X_ACCESS_SECRET,
     )
     client_x.create_tweet(text=text)
 
 
+# ============================================================
+# MAIN EXECUTION
+# ============================================================
 def main():
     today = date.today().strftime("%B %d, %Y")
 
-    # Load personalities
-    richard_personality = load_personality("personalities/richard.json")
-    elena_personality = load_personality("personalities/elena.json")
+    # Load JSON personalities
+    richard = load_personality("personalities/richard.json")
+    elena = load_personality("personalities/elena.json")
 
-    # 1. Topic from NewsAPI
+    # 1. Topic
     topic = get_trending_political_topic()
 
-    # 2. Factual background from Wikipedia
+    # 2. Wikipedia context
     wiki_context = get_wikipedia_context(topic)
 
     # 3. Neutral summary
     summary = generate_neutral_summary(topic, wiki_context)
 
-    # 4. Opinion pieces (still do NOT use Qdrant; only Wikipedia context)
-    conservative_article = generate_article(
-        "conservative", "Richard Hawthorne", topic, richard_personality, wiki_context
-    )
-    progressive_article = generate_article(
-        "progressive", "Elena Marlowe", topic, elena_personality, wiki_context
-    )
+    # 4. Articles
+    richard_article = generate_article("conservative", "Richard Hawthorne", topic, richard, wiki_context)
+    elena_article = generate_article("progressive", "Elena Marlowe", topic, elena, wiki_context)
 
-    # 5. Store everything in Qdrant (context + summary + both articles)
+    # 5. Store everything in Qdrant
     qdrant = init_qdrant()
     ensure_collection(qdrant)
-
-    # a) Wikipedia factual context as its own memory record
-    if wiki_context:
-        store_article(qdrant, "CONTEXT_WIKIPEDIA", topic, wiki_context)
-
-    # b) Neutral summary as its own memory record
+    store_article(qdrant, "CONTEXT_WIKIPEDIA", topic, wiki_context)
     store_article(qdrant, "SUMMARY_NEUTRAL", topic, summary)
-
-    # c) Conservative & progressive op-eds (as before)
-    store_article(qdrant, "Richard Hawthorne", topic, conservative_article)
-    store_article(qdrant, "Elena Marlowe", topic, progressive_article)
+    store_article(qdrant, "Richard Hawthorne", topic, richard_article)
+    store_article(qdrant, "Elena Marlowe", topic, elena_article)
 
     # 6. Compose tweet
     tweet = f"""Daily Political Commentary — {today}
@@ -276,17 +265,16 @@ def main():
 {summary}
 
 🦅 Conservative — Richard Hawthorne:
-{conservative_article}
+{richard_article}
 
 ⚖️ Progressive — Elena Marlowe:
-{progressive_article}
+{elena_article}
 """
 
-    # 7. Test mode vs live post
     if TEST_MODE:
-        print("\n===== TEST MODE ACTIVE — SKIPPING POST TO X =====")
+        print("\n===== TEST MODE ACTIVE — SKIPPING POST TO X =====\n")
         print(tweet)
-        print("=================================================\n")
+        print("\n===============================================\n")
     else:
         post_to_x(tweet)
 
