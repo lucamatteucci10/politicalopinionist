@@ -5,12 +5,12 @@ import requests
 import urllib.parse
 from datetime import date
 from openai import OpenAI
-from pytrends.request import TrendReq
 
-# Memory functions
 from memory import init_qdrant, ensure_collection, store_article
 
-# Load keys
+# -----------------------
+# ENV / CONFIG
+# -----------------------
 OPENAI_KEY = os.environ["OPENAI_KEY"]
 X_API_KEY = os.environ["X_API_KEY"]
 X_API_SECRET = os.environ["X_API_SECRET"]
@@ -18,22 +18,32 @@ X_ACCESS_TOKEN = os.environ["X_ACCESS_TOKEN"]
 X_ACCESS_SECRET = os.environ["X_ACCESS_SECRET"]
 NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY")
 
-# Test mode flag
 TEST_MODE = os.environ.get("TEST_MODE", "false").lower() == "true"
 
-# OpenAI client
 client = OpenAI(api_key=OPENAI_KEY)
 
+# Hard truth grounding to avoid outdated assumptions
+CURRENT_FACTS = """
+You must follow these UPDATED REAL-WORLD FACTS, overriding outdated knowledge:
 
-def load_personality(path):
+- The current U.S. President is Donald J. Trump (2nd nonconsecutive term: 2025–2029).
+- Joe Biden is the former U.S. President (2021–2025).
+- If you refer to "the President", "the administration", or current executive policy, you MUST mean President Trump and his administration.
+- Do NOT describe Biden as the current president.
+- Do NOT describe Trump as the former president.
+- If Wikipedia factual notes contradict your memory, trust Wikipedia instead.
+"""
+
+
+def load_personality(path: str) -> dict:
     with open(path, "r") as f:
         return json.load(f)
 
 
-# ============================================================
-# 1. FETCH NEWS TOPIC (NewsAPI)
-# ============================================================
-def get_trending_political_topic():
+# -----------------------
+# 1) TOPIC (NewsAPI)
+# -----------------------
+def get_trending_political_topic() -> str:
     print("Fetching U.S. headlines from NewsAPI…")
 
     if not NEWSAPI_KEY:
@@ -45,29 +55,29 @@ def get_trending_political_topic():
             "https://newsapi.org/v2/top-headlines?"
             f"language=en&country=us&apiKey={NEWSAPI_KEY}"
         )
-        response = requests.get(url)
-        data = response.json()
+        r = requests.get(url, timeout=10)
+        data = r.json()
 
-        if "articles" in data:
-            political_keywords = [
-                "Biden", "Trump", "election", "Senate", "Congress",
-                "Republican", "Democrat", "policy", "White House",
-                "Governor", "immigration", "border", "Supreme Court",
-                "bill", "tax", "Ukraine", "Gaza", "Israel", "NATO",
-                "China", "diplomatic"
-            ]
+        political_keywords = [
+            "Biden", "Trump", "election", "Senate", "Congress",
+            "Republican", "Democrat", "policy", "White House",
+            "Governor", "immigration", "border", "Supreme Court",
+            "bill", "tax", "Ukraine", "Gaza", "Israel", "NATO",
+            "China", "diplomatic"
+        ]
 
-            for article in data["articles"]:
-                title = article.get("title") or ""
-                if any(word.lower() in title.lower() for word in political_keywords):
-                    print("✔ Political topic from NewsAPI:", title)
-                    return title
+        for article in data.get("articles", []):
+            title = article.get("title") or ""
+            if any(k.lower() in title.lower() for k in political_keywords):
+                print("✔ Political topic from NewsAPI:", title)
+                return title
 
-            # fallback to first headline
-            if data["articles"]:
-                fallback = data["articles"][0].get("title", "current U.S. politics")
-                print("⚠ No political match — using first headline:", fallback)
-                return fallback
+        # fallback: first headline
+        articles = data.get("articles", [])
+        if articles:
+            fallback = articles[0].get("title") or "current U.S. political developments"
+            print("⚠ No political match — using first headline:", fallback)
+            return fallback
 
     except Exception as e:
         print("⚠ NewsAPI error:", e)
@@ -75,10 +85,10 @@ def get_trending_political_topic():
     return "current U.S. political developments"
 
 
-# ============================================================
-# 2. FETCH WIKIPEDIA CONTEXT
-# ============================================================
-def get_wikipedia_context(topic, max_pages=3):
+# -----------------------
+# 2) Wikipedia factual context
+# -----------------------
+def get_wikipedia_context(topic: str, max_pages: int = 3) -> str:
     try:
         search_url = "https://en.wikipedia.org/w/api.php"
         params = {
@@ -94,13 +104,14 @@ def get_wikipedia_context(topic, max_pages=3):
 
         resp = requests.get(search_url, params=params, headers=headers, timeout=10)
         data = resp.json()
+        results = data.get("query", {}).get("search", [])
 
-        if "query" not in data or "search" not in data["query"]:
+        if not results:
             print("⚠ No Wikipedia search results.")
             return ""
 
         bullets = []
-        for item in data["query"]["search"]:
+        for item in results:
             title = item.get("title")
             if not title:
                 continue
@@ -108,17 +119,15 @@ def get_wikipedia_context(topic, max_pages=3):
             encoded = urllib.parse.quote(title.replace(" ", "_"))
             summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}"
             s_resp = requests.get(summary_url, headers=headers, timeout=10)
-
             if s_resp.status_code != 200:
                 continue
 
-            extract = s_resp.json().get("extract")
+            extract = (s_resp.json().get("extract") or "").strip()
             if not extract:
                 continue
 
-            extract = extract.strip()
-            if len(extract) > 400:
-                extract = extract[:397] + "..."
+            if len(extract) > 420:
+                extract = extract[:417] + "..."
 
             bullets.append(f"- {title}: {extract}")
 
@@ -132,56 +141,37 @@ def get_wikipedia_context(topic, max_pages=3):
         return ""
 
 
-# ============================================================
-# 3. NEUTRAL SUMMARY
-# ============================================================
-def generate_neutral_summary(topic, wiki_context):
-    base = f"This trending political topic is: {topic}."
-
-    wiki_block = (
-        f"\nHere are neutral background notes from Wikipedia:\n{wiki_context}\n"
-        if wiki_context else ""
-    )
-
+# -----------------------
+# 3) Neutral summary
+# -----------------------
+def generate_neutral_summary(topic: str, wiki_context: str) -> str:
+    wiki_block = f"\nWikipedia factual notes:\n{wiki_context}\n" if wiki_context else ""
     prompt = f"""
 You are a strictly neutral political summarizer.
 
-{base}{wiki_block}
+Topic: {topic}
+{wiki_block}
 
 Write exactly one sentence that is purely factual.
 No opinions, no bias, no speculation.
 """
-
-    response = client.chat.completions.create(
+    resp = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.2,
     )
+    return resp.choices[0].message.content.strip()
 
-    return response.choices[0].message.content.strip()
 
-
-# ============================================================
-# 4. OP-ED GENERATOR WITH TRUMP-AS-PRESIDENT OVERRIDE
-# ============================================================
-def generate_article(voice, name, topic, personality, wiki_context):
+# -----------------------
+# 4) Long op-eds (store in Qdrant)
+# -----------------------
+def generate_long_oped(voice: str, name: str, topic: str, personality: dict, wiki_context: str) -> str:
     personality_text = json.dumps(personality, indent=2)
-
-    CURRENT_FACTS = """
-You must follow these UPDATED REAL-WORLD FACTS, which override all outdated knowledge:
-
-- The current U.S. President is **Donald J. Trump** (2nd nonconsecutive term: 2025–2029).
-- Joe Biden is the **former** U.S. President (2021–2025).
-- When referring to "the President", "the administration", or "current policy", you MUST refer to President Trump.
-- Do NOT describe Biden as the current president.
-- Do NOT describe Trump as the former president.
-- If Wikipedia factual context contradicts your memory, trust Wikipedia instead.
-"""
-
     wiki_block = (
-        f"Here are factual notes from Wikipedia (these override memory):\n{wiki_context}\n"
+        f"Factual notes from Wikipedia (treat as truth):\n{wiki_context}\n"
         if wiki_context else
-        "If unsure of a fact, avoid guessing and speak broadly.\n"
+        "If you are unsure of a fact, do not guess—stay general.\n"
     )
 
     prompt = f"""
@@ -193,29 +183,69 @@ MANDATORY FACTUAL REALITY:
 
 {wiki_block}
 
-Now write a 2–4 paragraph op-ed on: {topic}
+Write a 2–4 paragraph op-ed on: {topic}
 Perspective: {voice}
 
 Rules:
 - Keep under 900 characters
-- Bold, assertive tone
-- May praise or criticize public figures
+- Opinionated but policy-focused and analytical
+- May praise/criticize public figures
 - No personal attacks or incitement
-- Keep policy-focused and analytical
+- Avoid claims you can't support; if unsure, phrase cautiously
 """
-
-    response = client.chat.completions.create(
+    resp = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.8,
     )
-    return response.choices[0].message.content.strip()
+    return resp.choices[0].message.content.strip()
 
 
-# ============================================================
-# 5. TWEET SENDER
-# ============================================================
-def post_to_x(text):
+# -----------------------
+# 5) Tweet takes (publish on X)
+# -----------------------
+def generate_tweet_take(voice: str, name: str, topic: str, personality: dict, wiki_context: str) -> str:
+    personality_text = json.dumps(personality, indent=2)
+    wiki_block = (
+        f"Factual notes from Wikipedia (treat as truth):\n{wiki_context}\n"
+        if wiki_context else
+        "If you are unsure of a fact, do not guess—stay general.\n"
+    )
+
+    prompt = f"""
+You are {name}. Here is your personality:
+{personality_text}
+
+MANDATORY FACTUAL REALITY:
+{CURRENT_FACTS}
+
+{wiki_block}
+
+Write ONE tweet about: {topic}
+Perspective: {voice}
+
+Hard constraints:
+- Max 260 characters (leave room for emojis/formatting)
+- Single paragraph
+- One main argument + one supporting point
+- Punchy and readable for X (not a newspaper op-ed)
+- No hashtags unless absolutely natural
+- No personal attacks or incitement
+Return ONLY the tweet text.
+"""
+    resp = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.8,
+    )
+    tweet = resp.choices[0].message.content.strip()
+    return tweet
+
+
+# -----------------------
+# Posting
+# -----------------------
+def post_to_x(text: str) -> None:
     client_x = tweepy.Client(
         consumer_key=X_API_KEY,
         consumer_secret=X_API_SECRET,
@@ -225,58 +255,63 @@ def post_to_x(text):
     client_x.create_tweet(text=text)
 
 
-# ============================================================
-# MAIN EXECUTION
-# ============================================================
 def main():
     today = date.today().strftime("%B %d, %Y")
 
-    # Load JSON personalities
     richard = load_personality("personalities/richard.json")
     elena = load_personality("personalities/elena.json")
 
-    # 1. Topic
+    # 1) Topic
     topic = get_trending_political_topic()
 
-    # 2. Wikipedia context
+    # 2) Wikipedia context (fresh daily)
     wiki_context = get_wikipedia_context(topic)
 
-    # 3. Neutral summary
+    # 3) Neutral summary
     summary = generate_neutral_summary(topic, wiki_context)
 
-    # 4. Articles
-    richard_article = generate_article("conservative", "Richard Hawthorne", topic, richard, wiki_context)
-    elena_article = generate_article("progressive", "Elena Marlowe", topic, elena, wiki_context)
+    # 4) Long op-eds (for memory)
+    richard_oped = generate_long_oped("conservative", "Richard Hawthorne", topic, richard, wiki_context)
+    elena_oped = generate_long_oped("progressive", "Elena Marlowe", topic, elena, wiki_context)
 
-    # 5. Store everything in Qdrant
+    # 5) Tweets (for publishing)
+    richard_tweet = generate_tweet_take("conservative", "Richard Hawthorne", topic, richard, wiki_context)
+    elena_tweet = generate_tweet_take("progressive", "Elena Marlowe", topic, elena, wiki_context)
+
+    # 6) Store FULL CONTEXT in Qdrant (write-only, no retrieval)
     qdrant = init_qdrant()
     ensure_collection(qdrant)
-    store_article(qdrant, "CONTEXT_WIKIPEDIA", topic, wiki_context)
+
+    if wiki_context:
+        store_article(qdrant, "CONTEXT_WIKIPEDIA", topic, wiki_context)
     store_article(qdrant, "SUMMARY_NEUTRAL", topic, summary)
-    store_article(qdrant, "Richard Hawthorne", topic, richard_article)
-    store_article(qdrant, "Elena Marlowe", topic, elena_article)
 
-    # 6. Compose tweet
-    tweet = f"""Daily Political Commentary — {today}
+    store_article(qdrant, "OPED_Richard Hawthorne", topic, richard_oped)
+    store_article(qdrant, "OPED_Elena Marlowe", topic, elena_oped)
 
-🔥 Trending Topic: {topic}
+    store_article(qdrant, "TWEET_Richard Hawthorne", topic, richard_tweet)
+    store_article(qdrant, "TWEET_Elena Marlowe", topic, elena_tweet)
 
-📰 Summary:
-{summary}
+    # 7) Compose X post (tweet-friendly)
+    post_text = f"""Daily Political Takes — {today}
 
-🦅 Conservative — Richard Hawthorne:
-{richard_article}
+🔥 Topic: {topic}
 
-⚖️ Progressive — Elena Marlowe:
-{elena_article}
+📰 Summary: {summary}
+
+🦅 Richard:
+{richard_tweet}
+
+⚖️ Elena:
+{elena_tweet}
 """
 
     if TEST_MODE:
         print("\n===== TEST MODE ACTIVE — SKIPPING POST TO X =====\n")
-        print(tweet)
+        print(post_text)
         print("\n===============================================\n")
     else:
-        post_to_x(tweet)
+        post_to_x(post_text)
 
 
 if __name__ == "__main__":
