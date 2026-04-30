@@ -3,18 +3,21 @@ name: Daily Political Bot
 on:
   schedule:
     - cron: "0 14 * * *"   # Every day at 2 PM UTC (9 AM Boston)
-  workflow_dispatch:       # Manual trigger if needed
+  workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
 
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -30,6 +33,6 @@ jobs:
           X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
           QDRANT_URL: ${{ secrets.QDRANT_URL }}
           QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
-          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}   # ← NEW (required for fallback)
-          TEST_MODE: ${{ secrets.TEST_MODE }}       # ← Test Mode switch
+          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
+          TEST_MODE: ${{ secrets.TEST_MODE }}
         run: python main.py
